@@ -1,19 +1,23 @@
+#![deny(clippy::all)]
+
 //! Obtain resource statistics from devices on the local network
+
+use blt_utils::*;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use serde::Serialize;
 
-use sysinfo::CpuExt;
-use sysinfo::System;
-use sysinfo::SystemExt;
-
-use tracing::{trace, warn};
+use tracing::{error, info, warn};
 
 use std::collections::HashMap;
+use std::io::Read;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+pub const HEIMDALL_PORT: u16 = 4064;
 
 pub type HeimdallState = Vec<Device>;
 
@@ -24,8 +28,36 @@ pub struct Device {
     pub mem_usage: f32,
 }
 
-enum DeviceUpdateMessage {
+#[derive(Debug)]
+pub enum DeviceUpdateMessage {
     CpuMem { name: String, cpu: f32, mem: f32 },
+}
+
+impl From<DeviceUpdateMessage> for Vec<u8> {
+    fn from(value: DeviceUpdateMessage) -> Self {
+        match value {
+            DeviceUpdateMessage::CpuMem { name, cpu, mem } => {
+                let mut buffer = Vec::new();
+                serialize_string(name, &mut buffer);
+                serialize_f32(cpu, &mut buffer);
+                serialize_f32(mem, &mut buffer);
+                finalize_serialization(&mut buffer);
+                buffer
+            }
+        }
+    }
+}
+
+impl TryFrom<Vec<u8>> for DeviceUpdateMessage {
+    type Error = blt_utils::DeserializationError;
+
+    fn try_from(mut value: Vec<u8>) -> Result<Self, Self::Error> {
+        let name = deserialize_string(&mut value)?;
+        let cpu = deserialize_f32(&mut value)?;
+        let mem = deserialize_f32(&mut value)?;
+
+        Ok(DeviceUpdateMessage::CpuMem { name, cpu, mem })
+    }
 }
 
 #[derive(Default)]
@@ -51,7 +83,7 @@ impl HeimdallServer {
 
         thread::Builder::new()
             .name(String::from("HeimdallSocketThread"))
-            .spawn(|| Self::socket_task(sender))
+            .spawn(|| Self::socket_accept_task(sender))
             .expect("Could not spawn HeimdallSocketThread");
     }
 
@@ -105,26 +137,53 @@ impl HeimdallServer {
         }
     }
 
-    fn socket_task(sender: Sender<DeviceUpdateMessage>) {
-        let mut sys = System::new_all();
-
+    fn socket_accept_task(sender: Sender<DeviceUpdateMessage>) {
+        let listener = TcpListener::bind(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            HEIMDALL_PORT,
+        )))
+        .expect("Heimdall server unable to bind to socket");
         loop {
-            sys.refresh_all();
-            let cpu_usage =
-                sys.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / sys.cpus().len() as f32;
-            let mem_usage = (sys.used_memory() as f64 / sys.total_memory() as f64) as f32 * 100.0;
-            trace!("cpu {cpu_usage} mem {mem_usage}");
-            if sender
-                .send(DeviceUpdateMessage::CpuMem {
-                    name: String::from("Laptop"),
-                    cpu: cpu_usage,
-                    mem: mem_usage,
-                })
-                .is_err()
-            {
+            match listener.accept() {
+                Ok((socket, addr)) => {
+                    let thread_name = ["HeimdallStreamThread-", &addr.to_string()].concat();
+                    thread::Builder::new()
+                        .name(thread_name.clone())
+                        .spawn(|| Self::socket_stream_task(socket))
+                        .expect("Could not spawn HeimdallServerThread");
+                }
+                Err(e) => {}
+            }
+        }
+    }
+
+    fn socket_stream_task(mut client: TcpStream) {
+        let peer_address = client.peer_addr().expect("Unable to obtain peer address");
+        info!("accepted socket connection from {peer_address}");
+        loop {
+            let mut buf = [0; std::mem::size_of::<usize>()];
+            if let Err(ex) = client.read_exact(&mut buf) {
+                error!(%peer_address, %ex, "Unable to read message size");
                 break;
             }
-            thread::sleep(System::MINIMUM_CPU_UPDATE_INTERVAL * 2);
+            let message_size = usize::from_le_bytes(buf);
+            if message_size == 0 {
+                error!(%peer_address, "Received a message of size 0");
+                continue;
+            }
+            let mut data = vec![0; message_size];
+            if let Err(ex) = client.read_exact(&mut data.as_mut_slice()) {
+                error!(%peer_address, %ex, "Unable to read message body");
+                break;
+            }
+            match DeviceUpdateMessage::try_from(data) {
+                Ok(message) => {
+                    info!("Received {message:?} from {peer_address}");
+                }
+                Err(e) => {
+                    error!("{e}");
+                }
+            }
         }
     }
 }

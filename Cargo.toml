@@ -1,18 +1,7 @@
-[package]
-name = "heimdall"
-version = "0.1.0"
-edition = "2021"
-description = "Custom network status app"
-repository = "https://github.com/eta077/heimdall"
-readme = "README.md"
+[workspace]
 
-exclude = [ ".github" ]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-crossbeam-channel = "0.5"
-serde = { version = "1.0", features = ["derive"] }
-sysinfo = "0.28"
-tracing = "0.1"
+members = [
+    "heimdall",
+    "heimdall-client",
+]
 

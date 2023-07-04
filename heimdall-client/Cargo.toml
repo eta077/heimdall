@@ -1,0 +1,13 @@
+[package]
+name = "heimdall-client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+blt-utils = { version = "*", path = "../../blt-utils" }
+heimdall = { version = "*", path = "../heimdall" }
+sysinfo = "0.29.0"
+tracing = "*"
+tracing-subscriber = "*"
