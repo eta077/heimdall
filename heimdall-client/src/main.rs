@@ -55,5 +55,6 @@ fn send_update(stream_opt: &mut Option<TcpStream>, msg: DeviceUpdateMessage) {
     let write_result = stream.write_all(&buffer);
     if let Err(e) = write_result {
         error!("Could not send device update: {e}");
+        *stream_opt = None;
     }
 }
