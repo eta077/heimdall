@@ -8,7 +8,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use serde::Serialize;
 
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -146,18 +146,21 @@ impl HeimdallServer {
         loop {
             match listener.accept() {
                 Ok((socket, addr)) => {
+                    let task_sender = sender.clone();
                     let thread_name = ["HeimdallStreamThread-", &addr.to_string()].concat();
                     thread::Builder::new()
                         .name(thread_name.clone())
-                        .spawn(|| Self::socket_stream_task(socket))
+                        .spawn(move || Self::socket_stream_task(socket, task_sender))
                         .expect("Could not spawn HeimdallServerThread");
                 }
-                Err(e) => {}
+                Err(e) => {
+                    error!("Heimdall server could not accept client: {e}");
+                }
             }
         }
     }
 
-    fn socket_stream_task(mut client: TcpStream) {
+    fn socket_stream_task(mut client: TcpStream, sender: Sender<DeviceUpdateMessage>) {
         let peer_address = client.peer_addr().expect("Unable to obtain peer address");
         info!("accepted socket connection from {peer_address}");
         loop {
@@ -178,7 +181,9 @@ impl HeimdallServer {
             }
             match DeviceUpdateMessage::try_from(data) {
                 Ok(message) => {
-                    info!("Received {message:?} from {peer_address}");
+                    trace!("Received {message:?} from {peer_address}");
+                    // receiver won't be disconnected
+                    let _ = sender.send(message);
                 }
                 Err(e) => {
                     error!("{e}");

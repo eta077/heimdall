@@ -50,7 +50,7 @@ fn send_update(stream_opt: &mut Option<TcpStream>, msg: DeviceUpdateMessage) {
     }
     // safe to unwrap; value is inserted above
     let stream = stream_opt.as_mut().unwrap();
-    let mut buffer: Vec<u8> = msg.into();
+    let buffer: Vec<u8> = msg.into();
 
     let write_result = stream.write_all(&buffer);
     if let Err(e) = write_result {
