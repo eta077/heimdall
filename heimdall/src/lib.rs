@@ -22,22 +22,58 @@ pub const HEIMDALL_PORT: u16 = 4064;
 pub type HeimdallState = Vec<Device>;
 
 #[derive(Clone, Debug, Serialize)]
+pub enum ConnectionType {
+    Origin,
+    Wired,
+    Wireless,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Device {
     pub name: String,
+    pub connection: ConnectionType,
     pub cpu_usage: f32,
     pub mem_usage: f32,
 }
 
 #[derive(Debug)]
 pub enum DeviceUpdateMessage {
-    CpuMem { name: String, cpu: f32, mem: f32 },
+    Create {
+        name: String,
+        connection: ConnectionType,
+    },
+    CpuMem {
+        name: String,
+        cpu: f32,
+        mem: f32,
+    },
 }
 
 impl From<DeviceUpdateMessage> for Vec<u8> {
     fn from(value: DeviceUpdateMessage) -> Self {
         match value {
+            DeviceUpdateMessage::Create { name, connection } => {
+                let mut buffer = Vec::new();
+                // message type
+                serialize_u8(0, &mut buffer);
+
+                serialize_string(name, &mut buffer);
+                serialize_u8(
+                    match connection {
+                        ConnectionType::Origin => 0,
+                        ConnectionType::Wired => 1,
+                        ConnectionType::Wireless => 2,
+                    },
+                    &mut buffer,
+                );
+                finalize_serialization(&mut buffer);
+                buffer
+            }
             DeviceUpdateMessage::CpuMem { name, cpu, mem } => {
                 let mut buffer = Vec::new();
+                // message type
+                serialize_u8(1, &mut buffer);
+
                 serialize_string(name, &mut buffer);
                 serialize_f32(cpu, &mut buffer);
                 serialize_f32(mem, &mut buffer);
@@ -52,11 +88,37 @@ impl TryFrom<Vec<u8>> for DeviceUpdateMessage {
     type Error = blt_utils::DeserializationError;
 
     fn try_from(mut value: Vec<u8>) -> Result<Self, Self::Error> {
-        let name = deserialize_string(&mut value)?;
-        let cpu = deserialize_f32(&mut value)?;
-        let mem = deserialize_f32(&mut value)?;
+        let message_type = deserialize_u8(&mut value)?;
 
-        Ok(DeviceUpdateMessage::CpuMem { name, cpu, mem })
+        match message_type {
+            0 => {
+                let name = deserialize_string(&mut value)?;
+                let connection_type = deserialize_u8(&mut value)?;
+
+                let connection = match connection_type {
+                    0 => ConnectionType::Origin,
+                    1 => ConnectionType::Wired,
+                    2 => ConnectionType::Wireless,
+                    err => {
+                        return Err(blt_utils::DeserializationError::InvalidValue(
+                            ["Unexpected connection type: ", &err.to_string()].concat(),
+                        ));
+                    }
+                };
+
+                Ok(DeviceUpdateMessage::Create { name, connection })
+            }
+            1 => {
+                let name = deserialize_string(&mut value)?;
+                let cpu = deserialize_f32(&mut value)?;
+                let mem = deserialize_f32(&mut value)?;
+
+                Ok(DeviceUpdateMessage::CpuMem { name, cpu, mem })
+            }
+            err => Err(blt_utils::DeserializationError::InvalidValue(
+                ["Unexpected message type: ", &err.to_string()].concat(),
+            )),
+        }
     }
 }
 
@@ -106,18 +168,22 @@ impl HeimdallServer {
                 let mut new_state = state.lock().expect("receiver_task could not lock state");
                 for msg in receiver.try_iter() {
                     match msg {
-                        DeviceUpdateMessage::CpuMem { name, cpu, mem } => {
-                            new_state
-                                .entry(name.clone())
-                                .and_modify(|device| {
-                                    device.cpu_usage = cpu;
-                                    device.mem_usage = mem;
-                                })
-                                .or_insert_with(|| Device {
+                        DeviceUpdateMessage::Create { name, connection } => {
+                            new_state.insert(
+                                name.clone(),
+                                Device {
                                     name,
-                                    cpu_usage: cpu,
-                                    mem_usage: mem,
-                                });
+                                    connection,
+                                    cpu_usage: 0.0,
+                                    mem_usage: 0.0,
+                                },
+                            );
+                        }
+                        DeviceUpdateMessage::CpuMem { name, cpu, mem } => {
+                            new_state.entry(name.clone()).and_modify(|device| {
+                                device.cpu_usage = cpu;
+                                device.mem_usage = mem;
+                            });
                         }
                     }
                 }
