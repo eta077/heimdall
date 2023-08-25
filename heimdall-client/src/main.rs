@@ -65,7 +65,18 @@ fn send_update(
         let stream_result =
             TcpStream::connect_timeout(&config.server_address, Duration::from_millis(DELAY_MS));
         match stream_result {
-            Ok(stream) => {
+            Ok(mut stream) => {
+                let msg = DeviceUpdateMessage::Create {
+                    name: config.device_name.clone(),
+                    connection: heimdall::ConnectionType::Wireless,
+                };
+                let buffer: Vec<u8> = msg.into();
+
+                let write_result = stream.write_all(&buffer);
+                if let Err(e) = write_result {
+                    error!("Could not send device create: {e}");
+                    return;
+                }
                 *stream_opt = Some(stream);
             }
             Err(e) => {

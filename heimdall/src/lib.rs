@@ -15,25 +15,47 @@ use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub const HEIMDALL_PORT: u16 = 4064;
 
 pub type HeimdallState = Vec<Device>;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum ConnectionType {
     Origin,
     Wired,
     Wireless,
 }
 
+#[derive(Copy, Clone, Debug, Serialize)]
+pub enum DeviceStatus {
+    Enabled,
+    Disabled,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Device {
     pub name: String,
     pub connection: ConnectionType,
+    pub capabilities: Vec<(String, bool)>,
+    pub status: DeviceStatus,
     pub cpu_usage: f32,
     pub mem_usage: f32,
+}
+
+impl Device {
+    pub fn new(name: String, connection: ConnectionType) -> Self {
+        Device {
+            name,
+            connection,
+            capabilities: Vec::new(),
+            status: DeviceStatus::Enabled,
+            cpu_usage: 0.0,
+            mem_usage: 0.0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -126,6 +148,8 @@ impl TryFrom<Vec<u8>> for DeviceUpdateMessage {
 pub struct HeimdallServer {
     state: Arc<Mutex<HashMap<String, Device>>>,
     state_senders: Arc<Mutex<Vec<Sender<HeimdallState>>>>,
+    server_handle: Option<JoinHandle<()>>,
+    socket_handle: Option<JoinHandle<()>>,
 }
 
 impl HeimdallServer {
@@ -133,27 +157,58 @@ impl HeimdallServer {
         Self::default()
     }
 
-    pub fn start(&self) {
+    pub fn start(&mut self) {
+        {
+            let mut state = self.state.lock().expect("start could not lock state");
+            state.clear();
+            let router_name = String::from("Router");
+            state.insert(
+                router_name.clone(),
+                Device::new(router_name, ConnectionType::Origin),
+            );
+        }
+
         let (sender, receiver) = unbounded();
         let state = Arc::clone(&self.state);
         let senders = Arc::clone(&self.state_senders);
 
-        thread::Builder::new()
-            .name(String::from("HeimdallServerThread"))
-            .spawn(|| Self::receiver_task(receiver, state, senders))
-            .expect("Could not spawn HeimdallServerThread");
+        if let Some(handle) = self.server_handle.take() {
+            let _ = handle.join();
+        }
 
-        thread::Builder::new()
-            .name(String::from("HeimdallSocketThread"))
-            .spawn(|| Self::socket_accept_task(sender))
-            .expect("Could not spawn HeimdallSocketThread");
+        self.server_handle = Some(
+            thread::Builder::new()
+                .name(String::from("HeimdallServerThread"))
+                .spawn(|| Self::receiver_task(receiver, state, senders))
+                .expect("Could not spawn HeimdallServerThread"),
+        );
+
+        if let Some(handle) = self.socket_handle.take() {
+            let _ = handle.join();
+        }
+
+        self.socket_handle = Some(
+            thread::Builder::new()
+                .name(String::from("HeimdallSocketThread"))
+                .spawn(|| Self::socket_accept_task(sender))
+                .expect("Could not spawn HeimdallSocketThread"),
+        );
     }
 
     pub fn add_listener(&self) -> Receiver<HeimdallState> {
         let (sender, receiver) = unbounded();
+        // receiver will not be disconnected
+        let _ = sender.send(
+            self.state
+                .lock()
+                .expect("add_listener could not log state")
+                .values()
+                .cloned()
+                .collect(),
+        );
         self.state_senders
             .lock()
-            .expect("add_listener could not lock state_listeners")
+            .expect("add_listener could not lock state_senders")
             .push(sender);
         receiver
     }
@@ -169,15 +224,7 @@ impl HeimdallServer {
                 for msg in receiver.try_iter() {
                     match msg {
                         DeviceUpdateMessage::Create { name, connection } => {
-                            new_state.insert(
-                                name.clone(),
-                                Device {
-                                    name,
-                                    connection,
-                                    cpu_usage: 0.0,
-                                    mem_usage: 0.0,
-                                },
-                            );
+                            new_state.insert(name.clone(), Device::new(name, connection));
                         }
                         DeviceUpdateMessage::CpuMem { name, cpu, mem } => {
                             new_state.entry(name.clone()).and_modify(|device| {
