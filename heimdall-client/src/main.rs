@@ -1,14 +1,21 @@
+use directories::ProjectDirs;
+
 use heimdall::DeviceUpdateMessage;
+
+use serde::{Deserialize, Serialize};
 
 use sysinfo::{CpuExt, System, SystemExt};
 
 use tracing::error;
 
+use std::error::Error;
+use std::fs;
 use std::io::prelude::*;
 use std::net::{SocketAddr, TcpStream};
 use std::thread;
 use std::time::Duration;
 
+#[derive(Deserialize, Serialize)]
 struct HeimdallClientConfig {
     server_address: SocketAddr,
     device_name: String,
@@ -16,27 +23,16 @@ struct HeimdallClientConfig {
 
 const DELAY_MS: u64 = 1500;
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt().init();
 
     let mut stream = None;
     let mut sys = System::new_all();
 
-    let server_address;
-    match "127.0.0.1:4064".parse() {
-        Ok(address) => {
-            server_address = address;
-        }
-        Err(e) => {
-            error!("Heimdall client unable to parse server address: {e}");
-            return;
-        }
-    }
-
-    let config = HeimdallClientConfig {
-        server_address,
-        device_name: String::from("Laptop"),
-    };
+    let project_dirs =
+        ProjectDirs::from("dev", "jdn", "heimdall").ok_or("Unable to find project dir")?;
+    let config_path = project_dirs.config_dir().join("clientConfig.yml");
+    let config = serde_yaml::from_str(&fs::read_to_string(config_path)?)?;
 
     loop {
         sys.refresh_all();

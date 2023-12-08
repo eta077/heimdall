@@ -7,7 +7,10 @@ edition = "2021"
 
 [dependencies]
 blt-utils = "0.1.0" 
+directories = "5.0.1"
 heimdall = { version = "*", path = "../heimdall" }
+serde = { version = "1.0.193", features = ["derive"] }
+serde_yaml = "0.9.27"
 sysinfo = "0.29.0"
 tracing = "*"
 tracing-subscriber = "*"
